@@ -1,8 +1,11 @@
 import os
-from fastapi import FastAPI
+import time
+from typing import Any, Dict, List, Optional
+from fastapi import FastAPI, HTTPException, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-app = FastAPI()
+app = FastAPI(title="FlameWire API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,6 +15,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+SUPPORTED_CHAINS = [
+    {"name": "Ethereum", "code": "eth"},
+    {"name": "Bittensor", "code": "bittensor"},
+    {"name": "Sui", "code": "sui"},
+    {"name": "Polkadot", "code": "dot"},
+    {"name": "Solana", "code": "sol"},
+]
+
+class RPCRequest(BaseModel):
+    jsonrpc: str = "2.0"
+    method: str
+    params: Optional[List[Any]] = None
+    id: Optional[Any] = 1
+
+class RPCResponse(BaseModel):
+    jsonrpc: str = "2.0"
+    id: Any
+    result: Any
+
 @app.get("/")
 def read_root():
     return {"message": "Hello from FastAPI Backend!"}
@@ -19,6 +41,52 @@ def read_root():
 @app.get("/api/hello")
 def hello():
     return {"message": "Hello from the backend API!"}
+
+@app.get("/api/health")
+def api_health(request: Request):
+    started = time.time()
+    # lightweight work
+    _ = len(SUPPORTED_CHAINS)
+    latency_ms = int((time.time() - started) * 1000)
+    return {
+        "status": "ok",
+        "service": "flamewire",
+        "latency_ms": latency_ms,
+        "chains": SUPPORTED_CHAINS,
+        "region": os.getenv("REGION", "global"),
+        "version": "1.0.0",
+    }
+
+@app.get("/api/chains")
+def get_chains():
+    return {"chains": SUPPORTED_CHAINS}
+
+@app.post("/api/rpc/{chain}")
+def proxy_rpc(chain: str = Path(..., description="Chain code, e.g., eth, bittensor, sui"), payload: RPCRequest = None):
+    codes = {c["code"] for c in SUPPORTED_CHAINS}
+    if chain not in codes:
+        raise HTTPException(status_code=404, detail="Unsupported chain")
+
+    # Mock behavior: return deterministic sample data per method
+    method = (payload.method or "").lower()
+    rid = payload.id if payload and payload.id is not None else 1
+
+    if chain == "eth" and method == "eth_blocknumber":
+        return RPCResponse(jsonrpc="2.0", id=rid, result="0x12ab34")
+    if chain == "sui" and method == "sui_getlatestcheckpointsequence".lower():
+        return RPCResponse(jsonrpc="2.0", id=rid, result=123456)
+    if chain == "bittensor" and method == "subnet.get_state":
+        return RPCResponse(jsonrpc="2.0", id=rid, result={"subnets": 32})
+
+    # default echo for unknown methods
+    return RPCResponse(jsonrpc="2.0", id=rid, result={
+        "echo": {
+            "chain": chain,
+            "method": payload.method,
+            "params": payload.params or [],
+        },
+        "note": "Mock response. Connect real nodes/providers to enable live routing.",
+    })
 
 @app.get("/test")
 def test_database():
